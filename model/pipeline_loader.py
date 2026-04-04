@@ -155,11 +155,8 @@ def load_pipelines(
         tokenizer_2=_base_pipe.tokenizer_2,
         unet=_base_pipe.unet,
         scheduler=_base_pipe.scheduler,
-        image_processor=_base_pipe.image_processor,
-        requires_aesthetics_score=False,
-        force_zeros_for_empty_prompt=True,
     ).to(device)
-    logger.info("  ✓ img2img pipeline ready (shared weights)")
+  logger.info("  ✓ img2img pipeline ready (shared weights)")
 
     # ── 4. Optional SDXL Refiner ─────────────────────────────────────────────
     if load_refiner:
