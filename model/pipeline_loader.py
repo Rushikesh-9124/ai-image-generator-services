@@ -28,23 +28,23 @@ from diffusers import (
 logger = logging.getLogger(__name__)
 
 # ── Model identifiers ─────────────────────────────────────────────────────────
-SDXL_BASE_ID    = "stabilityai/stable-diffusion-xl-base-1.0"
+SDXL_BASE_ID = "stabilityai/stable-diffusion-xl-base-1.0"
 SDXL_REFINER_ID = "stabilityai/stable-diffusion-xl-refiner-1.0"
 
 # High-quality VAE that fixes colour saturation issues in SDXL
-SDXL_VAE_ID     = "madebyollin/sdxl-vae-fp16-fix"
+SDXL_VAE_ID = "madebyollin/sdxl-vae-fp16-fix"
 
 # Scheduler name → class mapping
 SCHEDULER_MAP = {
-    "dpm++":  DPMSolverMultistepScheduler,
+    "dpm++": DPMSolverMultistepScheduler,
     "euler_a": EulerAncestralDiscreteScheduler,
-    "ddim":   DDIMScheduler,
+    "ddim": DDIMScheduler,
 }
 
 # ── Singleton storage ─────────────────────────────────────────────────────────
-_base_pipe:     Optional[StableDiffusionXLPipeline]         = None
-_img2img_pipe:  Optional[StableDiffusionXLImg2ImgPipeline]  = None
-_refiner_pipe:  Optional[StableDiffusionXLImg2ImgPipeline]  = None
+_base_pipe: Optional[StableDiffusionXLPipeline] = None
+_img2img_pipe: Optional[StableDiffusionXLImg2ImgPipeline] = None
+_refiner_pipe: Optional[StableDiffusionXLImg2ImgPipeline] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -71,11 +71,10 @@ def _apply_memory_optimizations(pipe, device: str) -> None:
             logger.info("  ✓ xformers memory-efficient attention enabled")
         except Exception:
             logger.info("  ✗ xformers not available — using PyTorch SDPA fallback")
-            # torch >= 2.0 provides scaled_dot_product_attention natively
             pipe.unet.set_attn_processor(
                 __import__(
                     "diffusers.models.attention_processor",
-                    fromlist=["AttnProcessor2_0"]
+                    fromlist=["AttnProcessor2_0"],
                 ).AttnProcessor2_0()
             )
 
@@ -95,17 +94,17 @@ def _configure_scheduler(pipe, scheduler_name: str) -> None:
     cls = SCHEDULER_MAP.get(scheduler_name, DPMSolverMultistepScheduler)
     pipe.scheduler = cls.from_config(
         pipe.scheduler.config,
-        use_karras_sigmas=True,          # sharper results
-        algorithm_type="dpmsolver++",    # ignored by non-DPM schedulers
+        use_karras_sigmas=True,
+        algorithm_type="dpmsolver++",
     )
     logger.info(f"  ✓ Scheduler set to {cls.__name__} (karras sigmas)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 def load_pipelines(
-    scheduler_name:   str  = "dpm++",
-    load_refiner:     bool = True,
-    enable_safety:    bool = False,
+    scheduler_name: str = "dpm++",
+    load_refiner: bool = True,
+    enable_safety: bool = False,
 ) -> None:
     """
     Load SDXL Base (txt2img + img2img share weights) and optionally the Refiner.
@@ -118,7 +117,7 @@ def load_pipelines(
         return
 
     device = get_device()
-    dtype  = get_dtype()
+    dtype = get_dtype()
 
     logger.info(f"Loading SDXL pipelines | device={device} | dtype={dtype}")
 
@@ -127,10 +126,12 @@ def load_pipelines(
 
     # ── 2. SDXL Base (txt2img) ────────────────────────────────────────────────
     logger.info(f"  Loading SDXL Base ({SDXL_BASE_ID}) ...")
+
     safety_kwargs = {} if enable_safety else {
-        "safety_checker":         None,
+        "safety_checker": None,
         "requires_safety_checker": False,
     }
+
     _base_pipe = StableDiffusionXLPipeline.from_pretrained(
         SDXL_BASE_ID,
         vae=vae,
@@ -143,10 +144,12 @@ def load_pipelines(
 
     _configure_scheduler(_base_pipe, scheduler_name)
     _apply_memory_optimizations(_base_pipe, device)
+
     logger.info("  ✓ SDXL Base loaded")
 
-    # ── 3. SDXL img2img (shares VAE + UNet — near-zero extra VRAM) ───────────
+    # ── 3. SDXL img2img ───────────────────────────────────────────────────────
     logger.info("  Building img2img pipeline from base weights ...")
+
     _img2img_pipe = StableDiffusionXLImg2ImgPipeline(
         vae=_base_pipe.vae,
         text_encoder=_base_pipe.text_encoder,
@@ -156,11 +159,13 @@ def load_pipelines(
         unet=_base_pipe.unet,
         scheduler=_base_pipe.scheduler,
     ).to(device)
-  logger.info("  ✓ img2img pipeline ready (shared weights)")
+
+    logger.info("  ✓ img2img pipeline ready (shared weights)")
 
     # ── 4. Optional SDXL Refiner ─────────────────────────────────────────────
     if load_refiner:
         logger.info(f"  Loading SDXL Refiner ({SDXL_REFINER_ID}) ...")
+
         _refiner_pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
             SDXL_REFINER_ID,
             vae=vae,
@@ -169,8 +174,10 @@ def load_pipelines(
             variant="fp16" if dtype == torch.float16 else None,
             add_watermarker=False,
         ).to(device)
+
         _configure_scheduler(_refiner_pipe, scheduler_name)
         _apply_memory_optimizations(_refiner_pipe, device)
+
         logger.info("  ✓ Refiner loaded")
     else:
         logger.info("  ✗ Refiner skipped (load_refiner=False)")
@@ -179,8 +186,9 @@ def load_pipelines(
 
 
 def unload_pipelines() -> None:
-    """Release all pipeline memory (used during shutdown)."""
+    """Release all pipeline memory."""
     global _base_pipe, _img2img_pipe, _refiner_pipe
+
     for name, pipe in [
         ("base", _base_pipe),
         ("img2img", _img2img_pipe),
@@ -189,40 +197,38 @@ def unload_pipelines() -> None:
         if pipe is not None:
             del pipe
             logger.info(f"  Released {name} pipeline")
+
     _base_pipe = _img2img_pipe = _refiner_pipe = None
+
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
     logger.info("All pipelines unloaded.")
 
 
 # ── Public accessors ──────────────────────────────────────────────────────────
-def get_base_pipe()     -> Optional[StableDiffusionXLPipeline]:
+def get_base_pipe() -> Optional[StableDiffusionXLPipeline]:
     return _base_pipe
 
-def get_img2img_pipe()  -> Optional[StableDiffusionXLImg2ImgPipeline]:
+
+def get_img2img_pipe() -> Optional[StableDiffusionXLImg2ImgPipeline]:
     return _img2img_pipe
 
-def get_refiner_pipe()  -> Optional[StableDiffusionXLImg2ImgPipeline]:
+
+def get_refiner_pipe() -> Optional[StableDiffusionXLImg2ImgPipeline]:
     return _refiner_pipe
 
-def pipelines_loaded()  -> bool:
+
+def pipelines_loaded() -> bool:
     return _base_pipe is not None
 
 
 # ── LoRA loader ───────────────────────────────────────────────────────────────
 def load_lora_weights(
-    lora_path:  str,
+    lora_path: str,
     lora_scale: float = 0.9,
     adapter_name: str = "default",
 ) -> None:
-    """
-    Load a LoRA checkpoint into the base + img2img pipelines.
-
-    Args:
-        lora_path:    Local path or HuggingFace repo ID (e.g. 'civitai/...')
-        lora_scale:   Blend weight 0.0–1.0
-        adapter_name: Name used to identify the adapter (for multi-LoRA stacking)
-    """
     if _base_pipe is None:
         raise RuntimeError("Pipelines not loaded. Call load_pipelines() first.")
 
@@ -235,18 +241,19 @@ def load_lora_weights(
 
 
 def unload_lora_weights(adapter_name: str = "default") -> None:
-    """Remove a previously loaded LoRA from both pipelines."""
     if _base_pipe is None:
         return
+
     for pipe in [_base_pipe, _img2img_pipe]:
         if pipe is not None:
             pipe.delete_adapters([adapter_name])
+
     logger.info(f"LoRA '{adapter_name}' unloaded.")
 
 
 def swap_scheduler(scheduler_name: str) -> None:
-    """Hot-swap scheduler on all loaded pipelines without reloading models."""
     for pipe in [_base_pipe, _img2img_pipe, _refiner_pipe]:
         if pipe is not None:
             _configure_scheduler(pipe, scheduler_name)
+
     logger.info(f"Scheduler swapped to: {scheduler_name}")
