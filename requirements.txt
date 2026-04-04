@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────────────────────
+#  AI Image Generation Service v2.0 — Requirements
+#  Python 3.10+ recommended
+#  Install: pip install -r requirements.txt
+# ─────────────────────────────────────────────────────────────
+
+# ── Web framework ─────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+pydantic==2.7.1
+
+# ── PyTorch — install separately for your CUDA version ────────
+# CPU:    pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# CUDA 11.8: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+# CUDA 12.1: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+torch>=2.1.0
+torchvision>=0.16.0
+
+# ── Diffusers stack ───────────────────────────────────────────
+diffusers==0.27.2           # SDXL, ControlNet, img2img pipelines
+transformers==4.40.1        # CLIP text encoders
+accelerate==0.29.3          # mixed precision + device placement
+safetensors==0.4.3          # fast model loading
+huggingface_hub==0.23.0     # model downloads + caching
+
+# ── SDXL fixed VAE ────────────────────────────────────────────
+# madebyollin/sdxl-vae-fp16-fix is auto-downloaded via diffusers
+
+# ── Memory efficiency ─────────────────────────────────────────
+# xformers dramatically reduces VRAM usage — install matching your torch/CUDA version
+# pip install xformers --index-url https://download.pytorch.org/whl/cu121
+xformers>=0.0.25; sys_platform != "darwin"
+
+# ── Image processing ──────────────────────────────────────────
+Pillow==10.3.0
+
+# ── Utilities ─────────────────────────────────────────────────
+numpy>=1.24.0
