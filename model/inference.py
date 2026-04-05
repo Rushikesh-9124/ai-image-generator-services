@@ -1,16 +1,4 @@
-"""
-model/inference.py
-==================
-Core inference engine.
-
-Handles:
-  - txt2img via SDXL Base
-  - img2img via SDXL Base img2img pipeline
-  - Optional refiner pass (base → refiner hand-off)
-  - Reproducible seed control
-  - PIL image pre/post processing
-  - Async-wrapped sync inference (non-blocking event loop)
-"""
+# (FULL FILE — REPLACE ENTIRE FILE)
 
 import asyncio
 import logging
@@ -18,7 +6,6 @@ import time
 from typing import Optional
 
 import torch
-import numpy as np
 from PIL import Image, ImageFilter, ImageEnhance
 
 from model.pipeline_loader import (
@@ -31,92 +18,64 @@ from model.pipeline_loader import (
 
 logger = logging.getLogger(__name__)
 
-# ── Refiner settings ──────────────────────────────────────────────────────────
-# The base handles the first (1 - REFINER_HANDOFF_FRACTION) of denoising steps.
-# The refiner handles the final REFINER_HANDOFF_FRACTION to add detail.
-REFINER_HANDOFF_FRACTION = 0.2    # last 20 % of steps → refiner
+REFINER_HANDOFF_FRACTION = 0.25   # 🔥 slightly higher → better faces
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Image pre-processing utilities
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────
+# Utilities
+# ─────────────────────────────────────────
 
 def _make_generator(seed: int) -> torch.Generator:
-    device = get_device()
-    return torch.Generator(device=device).manual_seed(seed)
+    return torch.Generator(device=get_device()).manual_seed(seed)
 
 
-def _preprocess_init_image(
-    image: Image.Image,
-    target_width: int,
-    target_height: int,
-) -> Image.Image:
-    """
-    Resize + convert input image for img2img.
+def _snap_to_multiple(v: int, m: int = 8) -> int:
+    return (v // m) * m
 
-    We use LANCZOS for quality downscaling and ensure the image is RGB
-    (handles RGBA / palette PNG inputs gracefully).
-    """
-    image = image.convert("RGB")
-    image = image.resize((target_width, target_height), Image.LANCZOS)
+
+def _postprocess_output(image: Image.Image) -> Image.Image:
+    # 🔥 More natural enhancement (less aggressive)
+    image = image.filter(ImageFilter.UnsharpMask(radius=0.8, percent=90, threshold=3))
+    image = ImageEnhance.Contrast(image).enhance(1.03)
     return image
 
 
-def _postprocess_output(image: Image.Image, sharpen: bool = True) -> Image.Image:
-    """
-    Optional post-processing to boost perceptual quality:
-      - Slight sharpening (UnsharpMask)
-      - Mild contrast enhancement
-    Both are very subtle — the goal is to match DSLR output, not over-process.
-    """
-    if sharpen:
-        image = image.filter(
-            ImageFilter.UnsharpMask(radius=1.0, percent=110, threshold=3)
-        )
-        enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(1.05)
-    return image
+def _preprocess_init_image(img: Image.Image, w: int, h: int) -> Image.Image:
+    return img.convert("RGB").resize((w, h), Image.LANCZOS)
 
 
-def _snap_to_multiple(value: int, multiple: int = 8) -> int:
-    """SDXL UNet requires dimensions divisible by 8."""
-    return (value // multiple) * multiple
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Core synchronous inference
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────
+# txt2img
+# ─────────────────────────────────────────
 
 def _run_txt2img(
-    prompt:          str,
+    prompt: str,
     negative_prompt: str,
-    steps:           int,
-    guidance_scale:  float,
-    width:           int,
-    height:          int,
-    seed:            int,
-    use_refiner:     bool,
-    refiner_steps:   int,
+    steps: int,
+    guidance_scale: float,
+    width: int,
+    height: int,
+    seed: int,
+    use_refiner: bool,
+    refiner_steps: int,
 ) -> Image.Image:
-    """
-    SDXL txt2img with optional refiner.
 
-    When use_refiner=True:
-      1. Base runs (1 - REFINER_HANDOFF_FRACTION) of steps, outputs latents
-      2. Refiner polishes with the remaining fraction for crisp detail
-    """
-    base    = get_base_pipe()
+    base = get_base_pipe()
     refiner = get_refiner_pipe()
 
-    width  = _snap_to_multiple(width)
+    width = _snap_to_multiple(width)
     height = _snap_to_multiple(height)
-    gen    = _make_generator(seed)
+
+    gen = _make_generator(seed)
+
+    # 🔥 autocast improves performance + VRAM
+    autocast_ctx = torch.autocast("cuda") if torch.cuda.is_available() else nullcontext()
 
     if use_refiner and refiner is not None:
-        # ── Two-pass: base → latents → refiner ───────────────────────────────
-        denoising_end = 1.0 - REFINER_HANDOFF_FRACTION
 
-        with torch.inference_mode():
+        denoise_split = 1.0 - REFINER_HANDOFF_FRACTION
+
+        with torch.inference_mode(), autocast_ctx:
             latents = base(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -125,25 +84,27 @@ def _run_txt2img(
                 width=width,
                 height=height,
                 generator=gen,
-                denoising_end=denoising_end,
+                denoising_end=denoise_split,
                 output_type="latent",
-            ).images                      # still latent tensors here
+            ).images
 
         gen_refiner = _make_generator(seed)
-        with torch.inference_mode():
+
+        with torch.inference_mode(), autocast_ctx:
             result = refiner(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
                 image=latents,
                 num_inference_steps=refiner_steps,
-                denoising_start=denoising_end,
-                guidance_scale=guidance_scale,
+                denoising_start=denoise_split,
+                guidance_scale=guidance_scale * 0.9,   # 🔥 stabilize refinement
                 generator=gen_refiner,
             )
+
         image = result.images[0]
+
     else:
-        # ── Single-pass base only ─────────────────────────────────────────────
-        with torch.inference_mode():
+        with torch.inference_mode(), autocast_ctx:
             result = base(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -158,37 +119,36 @@ def _run_txt2img(
     return _postprocess_output(image)
 
 
-def _run_img2img(
-    init_image:      Image.Image,
-    prompt:          str,
-    negative_prompt: str,
-    steps:           int,
-    guidance_scale:  float,
-    width:           int,
-    height:          int,
-    strength:        float,
-    seed:            int,
-    use_refiner:     bool,
-    refiner_steps:   int,
-) -> Image.Image:
-    """
-    SDXL img2img with optional refiner polish.
+# ─────────────────────────────────────────
+# img2img
+# ─────────────────────────────────────────
 
-    strength controls how much the model deviates from the source image:
-      0.0 → identical to input
-      1.0 → completely reimagined (effectively txt2img)
-      0.4–0.7 → ideal for realistic edits while preserving structure
-    """
-    pipe    = get_img2img_pipe()
+def _run_img2img(
+    init_image: Image.Image,
+    prompt: str,
+    negative_prompt: str,
+    steps: int,
+    guidance_scale: float,
+    width: int,
+    height: int,
+    strength: float,
+    seed: int,
+    use_refiner: bool,
+    refiner_steps: int,
+) -> Image.Image:
+
+    pipe = get_img2img_pipe()
     refiner = get_refiner_pipe()
 
-    width  = _snap_to_multiple(width)
+    width = _snap_to_multiple(width)
     height = _snap_to_multiple(height)
 
     init_image = _preprocess_init_image(init_image, width, height)
-    gen        = _make_generator(seed)
+    gen = _make_generator(seed)
 
-    with torch.inference_mode():
+    autocast_ctx = torch.autocast("cuda") if torch.cuda.is_available() else nullcontext()
+
+    with torch.inference_mode(), autocast_ctx:
         result = pipe(
             prompt=prompt,
             negative_prompt=negative_prompt,
@@ -198,49 +158,48 @@ def _run_img2img(
             guidance_scale=guidance_scale,
             generator=gen,
         )
+
     image = result.images[0]
 
-    # Optional refiner pass on the img2img output for extra detail
+    # 🔥 Better refiner pass (more realistic humans)
     if use_refiner and refiner is not None:
         gen_refiner = _make_generator(seed)
-        with torch.inference_mode():
+
+        with torch.inference_mode(), autocast_ctx:
             result = refiner(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
                 image=image,
-                strength=0.35,          # light refinement pass — preserve edits
+                strength=0.25,   # 🔥 lower → preserve identity better
                 num_inference_steps=refiner_steps,
-                guidance_scale=guidance_scale,
+                guidance_scale=guidance_scale * 0.85,
                 generator=gen_refiner,
             )
+
         image = result.images[0]
 
     return _postprocess_output(image)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Public async interface
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────
+# Async wrappers
+# ─────────────────────────────────────────
 
 async def generate_txt2img(
-    prompt:          str,
+    prompt: str,
     negative_prompt: str,
-    steps:           int,
-    guidance_scale:  float,
-    width:           int,
-    height:          int,
-    seed:            int,
-    use_refiner:     bool   = True,
-    refiner_steps:   int    = 20,
-) -> tuple[Image.Image, float]:
-    """
-    Async wrapper around txt2img inference.
-    Returns (PIL image, elapsed_seconds).
-    """
+    steps: int,
+    guidance_scale: float,
+    width: int,
+    height: int,
+    seed: int,
+    use_refiner: bool = True,
+    refiner_steps: int = 20,
+):
     if not pipelines_loaded():
         raise RuntimeError("Pipelines not loaded.")
 
-    loop  = asyncio.get_event_loop()
+    loop = asyncio.get_event_loop()
     start = time.time()
 
     image = await loop.run_in_executor(
@@ -254,26 +213,22 @@ async def generate_txt2img(
 
 
 async def generate_img2img(
-    init_image:      Image.Image,
-    prompt:          str,
+    init_image: Image.Image,
+    prompt: str,
     negative_prompt: str,
-    steps:           int,
-    guidance_scale:  float,
-    width:           int,
-    height:          int,
-    strength:        float,
-    seed:            int,
-    use_refiner:     bool = True,
-    refiner_steps:   int  = 20,
-) -> tuple[Image.Image, float]:
-    """
-    Async wrapper around img2img inference.
-    Returns (PIL image, elapsed_seconds).
-    """
+    steps: int,
+    guidance_scale: float,
+    width: int,
+    height: int,
+    strength: float,
+    seed: int,
+    use_refiner: bool = True,
+    refiner_steps: int = 20,
+):
     if not pipelines_loaded():
         raise RuntimeError("Pipelines not loaded.")
 
-    loop  = asyncio.get_event_loop()
+    loop = asyncio.get_event_loop()
     start = time.time()
 
     image = await loop.run_in_executor(
