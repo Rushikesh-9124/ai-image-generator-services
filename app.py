@@ -112,7 +112,7 @@ async def lifespan(app: FastAPI):
     # 🔥 Warmup (important for first request latency)
     try:
         logger.info("Warming up model...")
-        pipe = get_txt2img_pipeline()
+        pipe = get_base_pipe()
 
         _ = pipe(
             prompt="warmup",
