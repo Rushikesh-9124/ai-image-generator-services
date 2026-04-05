@@ -23,7 +23,7 @@ from model.pipeline_loader import (
     load_pipelines,
     unload_pipelines,
     load_lora_weights,
-    get_txt2img_pipeline
+    get_base_pipe   # ✅ correct
 )
 from api.routes import router
 
